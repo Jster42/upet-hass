@@ -3,8 +3,9 @@
     "step": {
       "user": {
         "title": "UPET / Airrobo Cat Litter Box",
-        "description": "Enter your UPET/Airrobo account credentials. App credentials and region endpoint are detected from the recovered working API flow.",
+        "description": "Select the country configured in the UPET/Airrobo app, then enter your account credentials.",
         "data": {
+          "country": "Country",
           "username": "Account",
           "password": "Password",
           "app_key": "App key",
@@ -18,7 +19,7 @@
       "auth_failed": "Authentication failed. Check account and password.",
       "cannot_connect": "Could not connect to the UPET API.",
       "unknown": "Unexpected error. Check Home Assistant logs.",
-      "missing_required": "Account and password are required."
+      "missing_required": "Country, account, and password are required."
     },
     "abort": {
       "already_configured": "This account is already configured."

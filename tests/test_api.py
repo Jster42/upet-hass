@@ -51,7 +51,7 @@ class UrlopenRecorder:
 
 
 class ApiUnitTests(unittest.TestCase):
-    def make_client(self, account="user@example.com", password="secret"):
+    def make_client(self, account="user@example.com", password="secret", area_code=""):
         return api.UbpetClient(
             account=account,
             password=password,
@@ -60,6 +60,7 @@ class ApiUnitTests(unittest.TestCase):
             base_url="https://example.test",
             app_id="test-app-id",
             product="test-product",
+            area_code=area_code,
         )
 
     def test_password_is_always_md5_hashed_for_login(self):
@@ -82,6 +83,64 @@ class ApiUnitTests(unittest.TestCase):
         payload = recorder.payloads()[0]
         self.assertEqual(payload["password"], hashlib.md5(b"plain-password").hexdigest())
         self.assertNotEqual(payload["password"], "plain-password")
+        self.assertEqual(payload["areaCode"], "")
+        self.assertNotIn("appId", payload)
+
+    def test_login_accepts_standard_data_envelope(self):
+        recorder = UrlopenRecorder(
+            [
+                (
+                    200,
+                    {
+                        "code": 0,
+                        "message": "success",
+                        "data": {
+                            "token": {
+                                "token": "wrapped-token",
+                                "refreshToken": "wrapped-refresh",
+                                "expireAt": 9999999999999,
+                            },
+                            "user": {"userId": 321},
+                        },
+                    },
+                )
+            ]
+        )
+
+        with patch.object(api.urllib.request, "urlopen", recorder):
+            auth = self.make_client().login()
+
+        self.assertEqual(auth.token, "wrapped-token")
+        self.assertEqual(auth.refresh_token, "wrapped-refresh")
+        self.assertEqual(auth.user_id, 321)
+
+    def test_login_sends_region_without_authenticated_product_header(self):
+        recorder = UrlopenRecorder(
+            [
+                (
+                    200,
+                    {
+                        "token": {"token": "token-1", "refreshToken": None, "expireAt": 9999999999999},
+                        "user": {"userId": 123},
+                    },
+                )
+            ]
+        )
+
+        with patch.object(api.urllib.request, "urlopen", recorder):
+            self.make_client(area_code="RU").login()
+
+        headers = {key.lower(): value for key, value in recorder.requests[0].headers.items()}
+        self.assertNotIn("product", headers)
+        self.assertEqual(
+            recorder.payloads()[0],
+            {
+                "account": "user@example.com",
+                "password": hashlib.md5(b"secret").hexdigest(),
+                "accountType": "1",
+                "areaCode": "RU",
+            },
+        )
 
     def test_email_login_tries_email_account_type_first_then_falls_back(self):
         recorder = UrlopenRecorder(
@@ -158,6 +217,67 @@ class ApiUnitTests(unittest.TestCase):
         self.assertEqual(headers["x-ubt-appid"], "test-app-id")
         self.assertEqual(headers["x-ubt-deviceid"], "device-id")
         self.assertIn(" v2", headers["x-ubt-sign"])
+
+    def test_authenticated_request_relogs_once_after_401(self):
+        recorder = UrlopenRecorder(
+            [
+                (
+                    200,
+                    {
+                        "token": {"token": "revoked-token", "refreshToken": None, "expireAt": 9999999999999},
+                        "user": {"userId": 100},
+                    },
+                ),
+                (401, {"code": None, "message": "No message available"}),
+                (
+                    200,
+                    {
+                        "token": {"token": "fresh-token", "refreshToken": None, "expireAt": 9999999999999},
+                        "user": {"userId": 100},
+                    },
+                ),
+                (200, {"code": 0, "data": [{"serialNumber": "SN123"}]}),
+            ]
+        )
+
+        with patch.object(api.urllib.request, "urlopen", recorder):
+            devices = self.make_client().get_devices()
+
+        self.assertEqual(devices, [{"serialNumber": "SN123"}])
+        self.assertEqual(len(recorder.requests), 4)
+        first_headers = {key.lower(): value for key, value in recorder.requests[1].headers.items()}
+        retry_headers = {key.lower(): value for key, value in recorder.requests[3].headers.items()}
+        self.assertEqual(first_headers["authorization"], "revoked-token")
+        self.assertEqual(retry_headers["authorization"], "fresh-token")
+
+    def test_authenticated_request_does_not_loop_when_retry_is_401(self):
+        recorder = UrlopenRecorder(
+            [
+                (
+                    200,
+                    {
+                        "token": {"token": "revoked-token", "refreshToken": None, "expireAt": 9999999999999},
+                        "user": {"userId": 100},
+                    },
+                ),
+                (401, {"message": "revoked"}),
+                (
+                    200,
+                    {
+                        "token": {"token": "retry-token", "refreshToken": None, "expireAt": 9999999999999},
+                        "user": {"userId": 100},
+                    },
+                ),
+                (401, {"message": "still unauthorized"}),
+            ]
+        )
+
+        with patch.object(api.urllib.request, "urlopen", recorder):
+            with self.assertRaises(api.UbpetApiError) as raised:
+                self.make_client().get_devices()
+
+        self.assertEqual(raised.exception.status, 401)
+        self.assertEqual(len(recorder.requests), 4)
 
     def test_set_auto_clean_delay_sends_switch_update_payload_in_seconds(self):
         recorder = UrlopenRecorder(

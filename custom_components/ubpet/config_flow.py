@@ -12,22 +12,42 @@ from homeassistant.helpers import selector
 
 from .api import UbpetApiError, UbpetClient
 from .const import (
+    CONF_AREA_CODE,
     CONF_APP_ID,
     CONF_APP_KEY,
     CONF_BASE_URL,
+    CONF_COUNTRY,
     CONF_DEVICE_ID,
     CONF_PRODUCT,
     DEFAULT_APP_ID,
     DEFAULT_APP_KEY,
-    DEFAULT_BASE_URL,
     DEFAULT_PRODUCT,
     DOMAIN,
+    SUPPORTED_COUNTRIES,
+    base_url_for_country,
 )
 
 
-def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+def _schema(
+    defaults: dict[str, Any] | None = None,
+    *,
+    default_country: str | None = None,
+) -> vol.Schema:
     defaults = defaults or {}
+    selected_country = defaults.get(CONF_COUNTRY, default_country)
+    if isinstance(selected_country, str):
+        selected_country = selected_country.upper()
+    if selected_country not in SUPPORTED_COUNTRIES:
+        selected_country = None
+    country_field = (
+        vol.Required(CONF_COUNTRY, default=selected_country)
+        if selected_country
+        else vol.Required(CONF_COUNTRY)
+    )
     fields: dict[Any, Any] = {
+        country_field: selector.CountrySelector(
+            selector.CountrySelectorConfig(countries=list(SUPPORTED_COUNTRIES))
+        ),
         vol.Required(CONF_USERNAME, default=defaults.get(CONF_USERNAME, "")): str,
         vol.Required(CONF_PASSWORD): selector.TextSelector(
             selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
@@ -37,8 +57,6 @@ def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         fields[vol.Required(CONF_APP_KEY, default=defaults.get(CONF_APP_KEY, ""))] = selector.TextSelector(
             selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
         )
-    if not DEFAULT_BASE_URL:
-        fields[vol.Required(CONF_BASE_URL, default=defaults.get(CONF_BASE_URL, ""))] = str
     if not DEFAULT_APP_ID:
         fields[vol.Required(CONF_APP_ID, default=defaults.get(CONF_APP_ID, ""))] = str
     if not DEFAULT_PRODUCT:
@@ -61,6 +79,7 @@ def _validate_input(data: dict[str, Any]) -> list[dict[str, Any]]:
         app_id=app_id,
         base_url=base_url,
         product=product,
+        area_code=_clean_optional_string(data.get(CONF_AREA_CODE)),
     )
     client.login()
     return client.get_devices()
@@ -72,21 +91,35 @@ def _clean_required_string(value: Any) -> str:
     return value.strip()
 
 
+def _clean_optional_string(value: Any) -> str:
+    return value.strip().upper() if isinstance(value, str) else ""
+
+
+def _clean_country(value: Any) -> str:
+    country = _clean_optional_string(value)
+    if country not in SUPPORTED_COUNTRIES:
+        raise ValueError("unsupported country")
+    return country
+
+
 class UbpetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
         if user_input is not None:
-            connection_data = {
-                **user_input,
-                CONF_APP_KEY: DEFAULT_APP_KEY or user_input.get(CONF_APP_KEY),
-                CONF_APP_ID: DEFAULT_APP_ID or user_input.get(CONF_APP_ID),
-                CONF_BASE_URL: DEFAULT_BASE_URL or user_input.get(CONF_BASE_URL),
-                CONF_PRODUCT: DEFAULT_PRODUCT or user_input.get(CONF_PRODUCT),
-                CONF_DEVICE_ID: uuid.uuid4().hex,
-            }
             try:
+                country = _clean_country(user_input.get(CONF_COUNTRY))
+                connection_data = {
+                    **user_input,
+                    CONF_COUNTRY: country,
+                    CONF_APP_KEY: DEFAULT_APP_KEY or user_input.get(CONF_APP_KEY),
+                    CONF_APP_ID: DEFAULT_APP_ID or user_input.get(CONF_APP_ID),
+                    CONF_AREA_CODE: country,
+                    CONF_BASE_URL: base_url_for_country(country),
+                    CONF_PRODUCT: DEFAULT_PRODUCT or user_input.get(CONF_PRODUCT),
+                    CONF_DEVICE_ID: uuid.uuid4().hex,
+                }
                 devices = await self.hass.async_add_executor_job(_validate_input, connection_data)
             except ValueError:
                 errors["base"] = "missing_required"
@@ -108,7 +141,9 @@ class UbpetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data={
                         "account": _clean_required_string(user_input[CONF_USERNAME]),
                         "password": _clean_required_string(user_input[CONF_PASSWORD]),
+                        CONF_COUNTRY: country,
                         CONF_APP_KEY: _clean_required_string(connection_data[CONF_APP_KEY]),
+                        CONF_AREA_CODE: country,
                         CONF_DEVICE_ID: connection_data[CONF_DEVICE_ID],
                         CONF_APP_ID: app_id,
                         CONF_BASE_URL: _clean_required_string(connection_data[CONF_BASE_URL]),
@@ -116,7 +151,12 @@ class UbpetConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     },
                 )
 
-        return self.async_show_form(step_id="user", data_schema=_schema(user_input), errors=errors)
+        configured_country = getattr(getattr(self.hass, "config", None), "country", None)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_schema(user_input, default_country=configured_country),
+            errors=errors,
+        )
 
     @staticmethod
     @callback

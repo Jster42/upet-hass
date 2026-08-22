@@ -73,21 +73,22 @@ Settings -> Devices & services -> Add integration -> UPET / Airrobo Cat Litter B
 
 Required fields:
 
+- `Country`: the same country selected for the account in the official app.
 - `Account`: UPET/Airrobo login account.
 - `Password`: plain account password. The integration hashes it internally before sending it to the API.
 
-The integration also needs vendor app/API fields:
+The integration also needs vendor app credentials:
 
-- `BASE_URL`
 - `APP_ID`
 - `APP_KEY`
 - `PRODUCT`
 
 Bundled app defaults are included with the integration, so normal setup asks
-only for account and password. The app defaults are stored in obfuscated form
-to keep raw values out of the repository.
+only for country, account, and password. The selected country chooses the vendor
+region endpoint and is sent as the login area code. The app defaults are stored
+in obfuscated form to keep raw values out of the repository.
 
-If you maintain a private deployment and want to override the bundled defaults,
+If you maintain a private deployment and want to override the bundled app credentials,
 use `custom_components/ubpet/secrets.py.example` as a template for a private
 `secrets.py`.
 

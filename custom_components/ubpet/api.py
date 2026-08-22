@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 import random
 import sys
+import threading
 import time
 from typing import Any
 import urllib.error
@@ -84,6 +85,7 @@ class UbpetClient:
         base_url: str,
         app_id: str,
         product: str,
+        area_code: str = "",
     ) -> None:
         self.account = account
         self.password = password
@@ -91,42 +93,77 @@ class UbpetClient:
         self.base_url = base_url.rstrip("/")
         self.app_id = app_id
         self.product = product
+        self.area_code = area_code
         self.signer = UbtV2Signer(app_key)
         self.auth: UbpetAuth | None = None
+        self._auth_lock = threading.Lock()
 
     def ensure_login(self) -> UbpetAuth:
-        now_ms = int(time.time() * 1000)
-        if self.auth is None or (self.auth.expires_at_ms and self.auth.expires_at_ms - now_ms < 300_000):
+        if auth := self._usable_auth():
+            return auth
+        with self._auth_lock:
+            if auth := self._usable_auth():
+                return auth
             _LOGGER.info("UPET auth token is missing or expiring, logging in")
-            return self.login()
-        return self.auth
+            return self._login_unlocked()
+
+    def _usable_auth(self) -> UbpetAuth | None:
+        now_ms = int(time.time() * 1000)
+        auth = self.auth
+        if auth is None or (auth.expires_at_ms and auth.expires_at_ms - now_ms < 300_000):
+            return None
+        return auth
 
     def login(self) -> UbpetAuth:
+        with self._auth_lock:
+            return self._login_unlocked()
+
+    def _login_unlocked(self) -> UbpetAuth:
         last_error: UbpetApiError | None = None
         for account_type in _account_type_candidates(self.account):
             try:
-                _LOGGER.info("Trying UPET login with accountType=%s", account_type)
+                _LOGGER.info(
+                    "Trying UPET login with endpoint=%s areaCode=%s accountType=%s",
+                    self.base_url,
+                    self.area_code,
+                    account_type,
+                )
                 return self._login_with_account_type(account_type)
             except UbpetApiError as err:
-                _LOGGER.warning("UPET login failed with accountType=%s: %s", account_type, err)
+                _LOGGER.warning(
+                    "UPET login failed with endpoint=%s areaCode=%s accountType=%s: %s",
+                    self.base_url,
+                    self.area_code,
+                    account_type,
+                    err,
+                )
                 last_error = err
         if last_error is not None:
             raise last_error
         raise RuntimeError("no account type candidates")
+
+    def _refresh_after_unauthorized(self, rejected_token: str) -> UbpetAuth:
+        with self._auth_lock:
+            current_auth = self._usable_auth()
+            if current_auth is not None and current_auth.token != rejected_token:
+                return current_auth
+            _LOGGER.info("UPET auth token was rejected, logging in again")
+            self.auth = None
+            return self._login_unlocked()
 
     def _login_with_account_type(self, account_type: str) -> UbpetAuth:
         payload = {
             "account": self.account,
             "password": _md5_password(self.password),
             "accountType": account_type,
-            "areaCode": "",
-            "appId": self.app_id,
+            "areaCode": self.area_code,
         }
-        data = self._request("PUT", "/user-service-rest/v2/user/login", payload=payload, auth=False)
+        response = self._request("PUT", "/user-service-rest/v2/user/login", payload=payload, auth=False)
+        data = _response_data(response)
         token_data = data.get("token") if isinstance(data, dict) else None
         user_data = data.get("user") if isinstance(data, dict) else None
         if not isinstance(token_data, dict) or not token_data.get("token"):
-            raise UbpetApiError(200, data)
+            raise UbpetApiError(200, response)
         self.auth = UbpetAuth(
             token=token_data["token"],
             refresh_token=token_data.get("refreshToken"),
@@ -334,6 +371,24 @@ class UbpetClient:
         }
 
     def _request(self, method: str, path: str, *, payload: dict[str, Any] | None = None, auth: bool) -> Any:
+        auth_token = self.ensure_login().token if auth else None
+        try:
+            return self._request_once(method, path, payload=payload, auth_token=auth_token)
+        except UbpetApiError as err:
+            if not auth or err.status != 401 or auth_token is None:
+                raise
+            _LOGGER.warning("UPET HTTP %s %s returned 401; refreshing authentication once", method, path)
+            refreshed_auth = self._refresh_after_unauthorized(auth_token)
+            return self._request_once(method, path, payload=payload, auth_token=refreshed_auth.token)
+
+    def _request_once(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None,
+        auth_token: str | None,
+    ) -> Any:
         body = None
         if payload is not None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -348,17 +403,13 @@ class UbpetClient:
             "user-agent": USER_AGENT,
             "x-ubt-sign": self.signer.sign(device_id=self.device_id),
         }
-        if auth:
-            if self.auth is None:
-                self.ensure_login()
-            if self.auth is None:
-                raise RuntimeError("login failed")
-            headers["authorization"] = self.auth.token
+        if auth_token is not None:
+            headers["authorization"] = auth_token
             headers["product"] = self.product
 
         req = urllib.request.Request(self.base_url + path, data=body, headers=headers, method=method)
         started = time.monotonic()
-        _LOGGER.debug("UPET HTTP %s %s auth=%s", method, path, auth)
+        _LOGGER.debug("UPET HTTP %s %s auth=%s", method, path, auth_token is not None)
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data = _decode_response(resp.read())
@@ -372,7 +423,10 @@ class UbpetClient:
                 )
                 return data
         except urllib.error.HTTPError as err:
-            data = _decode_response(err.read())
+            try:
+                data = _decode_response(err.read())
+            finally:
+                err.close()
             _LOGGER.warning("UPET HTTP %s %s failed with status=%s", method, path, err.code)
             raise UbpetApiError(err.code, data) from err
 
@@ -402,6 +456,13 @@ def _raise_for_api_error(status: int, data: Any) -> None:
         code = data.get("code")
         if code not in (None, 0):
             raise UbpetApiError(status, data)
+
+
+def _response_data(payload: Any) -> Any:
+    """Unwrap the standard vendor response envelope when it is present."""
+    if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+        return payload["data"]
+    return payload
 
 
 def _require_dict(payload: Any) -> dict[str, Any]:
