@@ -35,8 +35,29 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             }
         ),
         "last_update_success": coordinator.last_update_success,
+        "capabilities": capability_summary(coordinator.data or {}),
         "data": _redact(coordinator.data or {}),
     }
+
+
+def capability_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """List the fields this account's boxes actually returned."""
+
+    devices: dict[str, Any] = {}
+    raw_devices = data.get("devices")
+    if not isinstance(raw_devices, dict):
+        return {"devices": devices}
+    for serial, item in raw_devices.items():
+        if not isinstance(item, dict):
+            continue
+        device = item.get("device") if isinstance(item.get("device"), dict) else {}
+        config = item.get("config") if isinstance(item.get("config"), dict) else {}
+        devices[str(serial)] = {
+            "name": device.get("deviceName"),
+            "device_fields": sorted(str(key) for key in device),
+            "config_fields": sorted(str(key) for key in config),
+        }
+    return {"devices": devices}
 
 
 def _redact(value: Any) -> Any:

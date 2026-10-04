@@ -51,6 +51,12 @@ class AccountProfileTests(unittest.TestCase):
         self.assertFalse(profiles.uses_fixed_host(profiles.PROFILE_UPET))
         self.assertEqual(profiles.DEFAULT_PROFILE, profiles.PROFILE_MEOWANT)
 
+    def test_meowant_sc09_has_no_litter_rake_commands(self):
+        self.assertFalse(profiles.include_mqtt_service(profiles.PROFILE_MEOWANT, "start_rise"))
+        self.assertFalse(profiles.include_mqtt_service(profiles.PROFILE_MEOWANT, "start_drop"))
+        self.assertTrue(profiles.include_mqtt_service(profiles.PROFILE_MEOWANT, "start_clean_up"))
+        self.assertTrue(profiles.include_mqtt_service(profiles.PROFILE_UPET, "start_rise"))
+
 
 if __name__ == "__main__":
     unittest.main()

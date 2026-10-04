@@ -814,3 +814,21 @@ class DiagnosticsUnitTests(unittest.TestCase):
         self.assertEqual(redacted["config"]["gmtTimeZone"], "GMT+03:00")
         self.assertEqual(redacted["cats"][0]["nickname"], "Cat")
         self.assertEqual(redacted["cats"][0]["icon"], diagnostics.REDACTED)
+
+    def test_capability_summary_lists_returned_device_and_config_fields(self):
+        diagnostics = load_diagnostics_module()
+
+        summary = diagnostics.capability_summary(
+            {
+                "devices": {
+                    "SN1": {
+                        "device": {"deviceName": "SC-09", "serialNumber": "SN1"},
+                        "config": {"boxFunctionVOList": [], "wifiName": "home"},
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(summary["devices"]["SN1"]["name"], "SC-09")
+        self.assertEqual(summary["devices"]["SN1"]["device_fields"], ["deviceName", "serialNumber"])
+        self.assertEqual(summary["devices"]["SN1"]["config_fields"], ["boxFunctionVOList", "wifiName"])

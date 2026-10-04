@@ -84,3 +84,15 @@ def uses_fixed_host(profile_id: str) -> bool:
     """Meowant stays on its own host. UPET picks a host from the country."""
 
     return get_profile(profile_id).profile_id != PROFILE_UPET
+
+
+# Raise/lower rake commands belong to the dual-rake tray. The SC-09 is a rotating box.
+RAKE_SERVICE_IDS = frozenset({"start_rise", "start_drop"})
+
+
+def include_mqtt_service(profile_id: str | None, service_id: str) -> bool:
+    """Hide litter-rake commands on a Meowant account."""
+
+    if profile_id in {PROFILE_MEOWANT, LEGACY_PROFILE_MEOWANT} and service_id in RAKE_SERVICE_IDS:
+        return False
+    return True

@@ -12,8 +12,9 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_PROFILE, DOMAIN
 from .coordinator import UbpetDataUpdateCoordinator
+from .profiles import include_mqtt_service
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,9 +114,12 @@ MQTT_BUTTONS: tuple[UbpetMqttButtonDescription, ...] = (
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     coordinator: UbpetDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    profile_id = entry.data.get(CONF_PROFILE)
     entities: list[UbpetMqttCommandButton] = []
     for serial in coordinator.data.get("devices", {}):
         for description in MQTT_BUTTONS:
+            if not include_mqtt_service(profile_id, description.service_id):
+                continue
             entity = UbpetMqttCommandButton(coordinator, entry.entry_id, serial, description)
             entities.append(entity)
     async_add_entities(entities)

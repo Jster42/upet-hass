@@ -33,9 +33,9 @@ For safer use, create a separate UPET/Airrobo account and share litter box acces
   - Flatten.
   - Pause flatten.
   - Resume flatten.
-  - Raise litter rake.
-  - Lower litter rake.
-  - Request MQTT state.
+- Request MQTT state.
+
+Raise and lower litter rake are omitted for a Meowant account. Those commands belong to the dual-rake tray, and the SC-09 is a rotating box.
 - Live MQTT work status:
   - Work mode.
   - Work state.
